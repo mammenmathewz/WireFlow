@@ -1,41 +1,50 @@
-#include <string.h>
 #include "buffer.h"
+#include <sys/socket.h>
+#include <string.h>
+#include <errno.h>
 
-void buffer_init(ring_buffer_t *buf) {
-    buf->head = 0;
-    buf->tail = 0;
-    buf->count = 0;
-}
-
-size_t buffer_available_capacity(const ring_buffer_t *buf) {
+size_t buffer_available_space(const ring_buffer_t *buf) {
     return BUFFER_SIZE - buf->count;
 }
 
 size_t buffer_write(ring_buffer_t *buf, const char *src, size_t len) {
-    size_t capacity = buffer_available_capacity(buf);
-    if (len > capacity) {
-        len = capacity; // Write as much as possible without overflowing
+    size_t capacity = BUFFER_SIZE - buf->count;
+    size_t to_write = (len < capacity) ? len : capacity;
+    if (to_write == 0) return 0;
+
+    size_t first_chunk = (buf->head + to_write > BUFFER_SIZE) 
+                         ? (BUFFER_SIZE - buf->head) 
+                         : to_write;
+    
+    memcpy(&buf->data[buf->head], src, first_chunk);
+    if (to_write > first_chunk) {
+        memcpy(&buf->data[0], src + first_chunk, to_write - first_chunk);
     }
 
-    for (size_t i = 0; i < len; i++) {
-        buf->data[buf->head] = src[i];
-        buf->head = (buf->head + 1) % BUFFER_SIZE;
-        buf->count++;
-    }
-
-    return len;
+    buf->head = (buf->head + to_write) % BUFFER_SIZE;
+    buf->count += to_write;
+    return to_write;
 }
 
-size_t buffer_read(ring_buffer_t *buf, char *dest, size_t len) {
-    if (len > buf->count) {
-        len = buf->count; // Read only available data
-    }
+ssize_t buffer_drain(ring_buffer_t *buf, int target_fd) {
+    size_t total_sent = 0;
 
-    for (size_t i = 0; i < len; i++) {
-        dest[i] = buf->data[buf->tail];
-        buf->tail = (buf->tail + 1) % BUFFER_SIZE;
-        buf->count--;
-    }
+    while (buf->count > 0) {
+        size_t chunk = (buf->tail + buf->count > BUFFER_SIZE) 
+                       ? (BUFFER_SIZE - buf->tail) 
+                       : buf->count;
 
-    return len;
+        ssize_t sent = send(target_fd, &buf->data[buf->tail], chunk, MSG_NOSIGNAL);
+        if (sent > 0) {
+            buf->tail = (buf->tail + sent) % BUFFER_SIZE;
+            buf->count -= sent;
+            total_sent += sent;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            return -1;
+        }
+    }
+    return (ssize_t)total_sent;
 }

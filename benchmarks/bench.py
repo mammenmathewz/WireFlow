@@ -15,14 +15,15 @@ def run_client(n_messages):
     latencies = []
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
         s.connect((PROXY_HOST, PROXY_PORT))
         for _ in range(n_messages):
             t0 = time.perf_counter()
             s.sendall(MESSAGE)
             s.recv(len(MESSAGE))
-            latencies.append((time.perf_counter() - t0) * 1_000_000)  # microseconds
+            latencies.append((time.perf_counter() - t0) * 1_000_000)
         s.close()
-    except Exception as e:
+    except Exception:
         with LOCK:
             ERRORS += 1
     with LOCK:
@@ -43,23 +44,22 @@ def benchmark(n_clients, n_messages):
 
     total = len(RESPONSES)
     if total == 0:
-        print(f"  [ERROR] no successful responses (errors={ERRORS})")
+        print(f"  clients={n_clients:<5}  [DEAD — all {ERRORS} connections failed]")
         return
 
     RESPONSES.sort()
     p50  = RESPONSES[int(total * 0.50)]
-    p95  = RESPONSES[int(total * 0.95)]
     p99  = RESPONSES[int(total * 0.99)]
-    mean = statistics.mean(RESPONSES)
     rps  = total / elapsed
+    error_pct = (ERRORS / (total + ERRORS)) * 100
 
-    print(f"  clients={n_clients:<4}  messages/client={n_messages:<4}  "
-          f"total={total:<6}  rps={rps:>8.0f}  "
-          f"mean={mean:>7.1f}μs  p50={p50:>7.1f}μs  "
-          f"p95={p95:>7.1f}μs  p99={p99:>7.1f}μs  "
-          f"errors={ERRORS}")
+    status = "OK" if ERRORS == 0 else f"DEGRADED ({error_pct:.1f}% errors)"
+    print(f"  clients={n_clients:<5}  rps={rps:>8.0f}  "
+          f"p50={p50:>8.1f}μs  p99={p99:>9.1f}μs  "
+          f"errors={ERRORS:<5}  [{status}]")
 
-print("WireFlow benchmark")
+print("WireFlow break-point test")
 print("=" * 90)
-for clients in [1, 10, 50, 100]:
-    benchmark(clients, 100)
+for clients in [100, 250, 500, 750, 1000, 2000, 5000]:
+    benchmark(clients, 50)
+    time.sleep(1)  # let proxy recover between runs
